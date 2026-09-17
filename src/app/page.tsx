@@ -5,7 +5,7 @@ import {
   Eye, EyeOff, RefreshCw, Plus, Minus, CreditCard, 
   Utensils, Home, Car, PartyPopper, Briefcase, TrendingUp, 
   Package, User, Landmark, PlusCircle, CheckCircle, Clock, Calendar,
-  LayoutDashboard, PieChart, BarChart3
+  LayoutDashboard, BarChart3, ArrowRightLeft, DollarSign
 } from 'lucide-react';
 
 interface Transacao {
@@ -48,6 +48,8 @@ export default function FinanceiroApp() {
   // Modais
   const [mostrarFormTransacao, setMostrarFormTransacao] = useState(false);
   const [mostrarFormConta, setMostrarFormConta] = useState(false);
+  const [mostrarFormTransferencia, setMostrarFormTransferencia] = useState(false);
+  const [cartaoParaPagar, setCartaoParaPagar] = useState<Conta | null>(null);
 
   // Form Transação
   const [tipo, setTipo] = useState<'entrada' | 'saida'>('saida');
@@ -60,6 +62,12 @@ export default function FinanceiroApp() {
   const [isFixo, setIsFixo] = useState(false);
   const [isRepeat, setIsRepeat] = useState(false);
   const [numVezes, setNumVezes] = useState('2');
+
+  // Form Transferência / Pagamento
+  const [contaOrigem, setContaOrigem] = useState('');
+  const [contaDestino, setContaDestino] = useState('');
+  const [valorTransferencia, setValorTransferencia] = useState('');
+  const [contaPagamentoFatura, setContaPagamentoFatura] = useState('Itaú');
 
   // Form Conta/Cartão
   const [nomeConta, setNomeConta] = useState('');
@@ -77,8 +85,10 @@ export default function FinanceiroApp() {
       if (data.transacoes) setTransacoes(data.transacoes);
       if (data.contas) {
         setContas(data.contas);
-        if (data.contas.length > 0 && !bancoSelecionado) {
-          setBancoSelecionado(data.contas[0].nome);
+        if (data.contas.length > 0) {
+          if (!bancoSelecionado) setBancoSelecionado(data.contas[0].nome);
+          if (!contaOrigem) setContaOrigem(data.contas[0].nome);
+          if (!contaDestino) setContaDestino(data.contas[1]?.nome || data.contas[0].nome);
         }
       }
 
@@ -147,6 +157,62 @@ export default function FinanceiroApp() {
     } catch (err) { alert('Erro ao salvar!'); }
   };
 
+  const handlePagarFatura = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!cartaoParaPagar) return;
+
+    const valorFatura = calcularFaturaAtual(cartaoParaPagar);
+    if (valorFatura <= 0) return alert('Este cartão não possui fatura pendente!');
+
+    try {
+      const res = await fetch('/api/transacoes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          acao: 'pagar_fatura',
+          nomeCartao: cartaoParaPagar.nome,
+          contaPagamento: contaPagamentoFatura,
+          valorTotal: valorFatura,
+          dataPagamento: data
+        })
+      });
+
+      if (res.ok) {
+        setCartaoParaPagar(null);
+        carregarDados();
+      }
+    } catch (err) {
+      alert('Erro ao processar pagamento da fatura!');
+    }
+  };
+
+  const handleTransferencia = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!valorTransferencia || contaOrigem === contaDestino) {
+      return alert('Informe um valor válido e selecione contas diferentes!');
+    }
+
+    try {
+      const res = await fetch('/api/transacoes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          acao: 'transferencia',
+          contaOrigem,
+          contaDestino,
+          valor: parseFloat(valorTransferencia),
+          data
+        })
+      });
+
+      if (res.ok) {
+        setValorTransferencia('');
+        setMostrarFormTransferencia(false);
+        carregarDados();
+      }
+    } catch (err) { alert('Erro ao realizar transferência!'); }
+  };
+
   const handleCriarConta = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!nomeConta) return alert('Informe o nome!');
@@ -173,36 +239,41 @@ export default function FinanceiroApp() {
     } catch (err) { alert('Erro ao criar conta!'); }
   };
 
-  // Cálculos de Saldo e Faturas
-  const calcularSaldoOuFatura = (conta: Conta) => {
-    if (conta.tipo === 'Cartao de Credito') {
-      const mesAtual = new Date().toISOString().slice(0, 7);
-      return transacoes
-        .filter(t => t.banco.toLowerCase() === conta.nome.toLowerCase() && t.tipo === 'saida' && t.data.startsWith(mesAtual))
-        .reduce((acc, t) => acc + Number(t.valor), 0);
-    } else {
-      const inicial = Number(conta.saldo_inicial) || 0;
-      const movimentacoes = transacoes
-        .filter(t => t.banco.toLowerCase() === conta.nome.toLowerCase() && t.pago)
-        .reduce((acc, t) => acc + (t.tipo === 'entrada' ? Number(t.valor) : -Number(t.valor)), 0);
-      return inicial + movimentacoes;
-    }
+  const calcularFaturaAtual = (conta: Conta) => {
+    const mesAtual = new Date().toISOString().slice(0, 7);
+    return transacoes
+      .filter(t => t.banco.toLowerCase() === conta.nome.toLowerCase() && t.tipo === 'saida' && !t.pago && t.data.startsWith(mesAtual))
+      .reduce((acc, t) => acc + Number(t.valor), 0);
+  };
+
+  const calcularTotalComprometidoCartao = (conta: Conta) => {
+    return transacoes
+      .filter(t => t.banco.toLowerCase() === conta.nome.toLowerCase() && t.tipo === 'saida' && !t.pago)
+      .reduce((acc, t) => acc + Number(t.valor), 0);
+  };
+
+  const calcularSaldoConta = (conta: Conta) => {
+    const inicial = Number(conta.saldo_inicial) || 0;
+    const movimentacoes = transacoes
+      .filter(t => t.banco.toLowerCase() === conta.nome.toLowerCase() && t.pago)
+      .reduce((acc, t) => acc + (t.tipo === 'entrada' ? Number(t.valor) : -Number(t.valor)), 0);
+    return inicial + movimentacoes;
   };
 
   const contasBancarias = contas.filter(c => c.tipo !== 'Cartao de Credito');
   const cartoesCredito = contas.filter(c => c.tipo === 'Cartao de Credito');
-  const saldoTotalPatrimonio = contasBancarias.reduce((acc, c) => acc + calcularSaldoOuFatura(c), 0);
+  const saldoTotalPatrimonio = contasBancarias.reduce((acc, c) => acc + calcularSaldoConta(c), 0);
 
-  const totalGastoCartoes = cartoesCredito.reduce((acc, c) => acc + calcularSaldoOuFatura(c), 0);
+  const totalGastoCartoes = cartoesCredito.reduce((acc, c) => acc + calcularFaturaAtual(c), 0);
   const totalLimites = cartoesCredito.reduce((acc, c) => acc + Number(c.limite_total || 0), 0);
 
   const mesAtual = new Date().toISOString().slice(0, 7);
   const transacoesDoMes = transacoes.filter(t => t.data.startsWith(mesAtual));
-  const totalEntradas = transacoesDoMes.filter(t => t.tipo === 'entrada' && t.pago).reduce((acc, t) => acc + Number(t.valor), 0);
-  const totalSaidas = transacoesDoMes.filter(t => t.tipo === 'saida' && t.pago).reduce((acc, t) => acc + Number(t.valor), 0);
+  const totalEntradas = transacoesDoMes.filter(t => t.tipo === 'entrada' && t.pago && t.categoria !== 'Transferência').reduce((acc, t) => acc + Number(t.valor), 0);
+  const totalSaidas = transacoesDoMes.filter(t => t.tipo === 'saida' && t.pago && t.categoria !== 'Transferência').reduce((acc, t) => acc + Number(t.valor), 0);
   const balancoMes = totalEntradas - totalSaidas;
 
-  const totalGastosEfetivadosRelatorio = relatorioCat.reduce((acc, c) => acc + Number(c.total), 0);
+  const totalGastosEfetivadosRelatorio = relatorioCat.filter(c => c.categoria !== 'Transferência').reduce((acc, c) => acc + Number(c.total), 0);
 
   const formatarValor = (val: number) => {
     if (esconderValores) return 'R$ •••••';
@@ -217,6 +288,7 @@ export default function FinanceiroApp() {
       case 'Lazer': return <PartyPopper size={18} className="text-pink-500" />;
       case 'Salário': return <Briefcase size={18} className="text-emerald-500" />;
       case 'Investimentos': return <TrendingUp size={18} className="text-cyan-500" />;
+      case 'Transferência': return <ArrowRightLeft size={18} className="text-blue-500" />;
       default: return <Package size={18} className="text-slate-500" />;
     }
   };
@@ -250,7 +322,7 @@ export default function FinanceiroApp() {
 
         {abaAtiva === 'cartoes' && (
           <div className="mt-4">
-            <span className="text-xs text-purple-200">Total Faturas de Cartões</span>
+            <span className="text-xs text-purple-200">Faturas Pendentes no Mês</span>
             <div className="text-2xl font-bold text-rose-300 mt-0.5">{formatarValor(totalGastoCartoes)}</div>
           </div>
         )}
@@ -262,7 +334,7 @@ export default function FinanceiroApp() {
           </div>
         )}
 
-        {/* Botões Ação */}
+        {/* Botões de Ação */}
         <div className="flex justify-between mt-6 pt-2 overflow-x-auto gap-4 scrollbar-none">
           <button onClick={() => { setTipo('saida'); setMostrarFormTransacao(true); }} className="flex flex-col items-center gap-2 min-w-[64px]">
             <div className="w-14 h-14 bg-purple-700/60 hover:bg-purple-700 rounded-full flex items-center justify-center">
@@ -278,11 +350,18 @@ export default function FinanceiroApp() {
             <span className="text-xs font-semibold">Nova Entrada</span>
           </button>
 
+          <button onClick={() => setMostrarFormTransferencia(true)} className="flex flex-col items-center gap-2 min-w-[64px]">
+            <div className="w-14 h-14 bg-purple-700/60 hover:bg-purple-700 rounded-full flex items-center justify-center">
+              <ArrowRightLeft size={22} className="text-white" />
+            </div>
+            <span className="text-xs font-semibold">Transferir</span>
+          </button>
+
           <button onClick={() => setMostrarFormConta(true)} className="flex flex-col items-center gap-2 min-w-[64px]">
             <div className="w-14 h-14 bg-purple-700/60 hover:bg-purple-700 rounded-full flex items-center justify-center">
               <PlusCircle size={22} className="text-white" />
             </div>
-            <span className="text-xs font-semibold">+ Cartão/Conta</span>
+            <span className="text-xs font-semibold">+ Conta/Cartão</span>
           </button>
         </div>
       </div>
@@ -301,7 +380,7 @@ export default function FinanceiroApp() {
                       <Landmark size={14} className="text-purple-600" />
                     </div>
                     <div className="font-bold text-sm text-slate-800 mt-1">
-                      {formatarValor(calcularSaldoOuFatura(c))}
+                      {formatarValor(calcularSaldoConta(c))}
                     </div>
                   </div>
                 ))}
@@ -330,22 +409,30 @@ export default function FinanceiroApp() {
           </>
         )}
 
-        {/* ABA 2: DETALHAMENTO DOS CARTÕES DE CRÉDITO */}
+        {/* ABA 2: DETALHAMENTO DOS CARTÕES */}
         {abaAtiva === 'cartoes' && (
           <div className="space-y-4">
             <div className="bg-gradient-to-r from-purple-900 to-slate-900 p-5 rounded-2xl text-white shadow-md">
               <span className="text-xs text-purple-300 font-medium uppercase tracking-wider">Aglomerado de Cartões</span>
-              <div className="flex justify-between items-end mt-2">
+              
+              <div className="grid grid-cols-2 gap-4 mt-3 pt-2 border-t border-purple-800/60">
                 <div>
-                  <span className="text-[10px] text-slate-400">Gasto Total no Mês</span>
-                  <div className="text-xl font-bold text-rose-400">{formatarValor(totalGastoCartoes)}</div>
-                </div>
-                {totalLimites > 0 && (
-                  <div className="text-right">
-                    <span className="text-[10px] text-slate-400">Limite Global Disp.</span>
-                    <div className="text-sm font-bold text-emerald-400">{formatarValor(totalLimites - totalGastoCartoes)}</div>
+                  <span className="text-[10px] text-slate-400 font-semibold uppercase">Total Limite Usado</span>
+                  <div className="text-lg font-bold text-rose-400">
+                    {formatarValor(
+                      cartoesCredito.reduce((acc, c) => acc + calcularTotalComprometidoCartao(c), 0)
+                    )}
                   </div>
-                )}
+                </div>
+
+                <div className="text-right">
+                  <span className="text-[10px] text-slate-400 font-semibold uppercase">Limite Global Disp.</span>
+                  <div className="text-lg font-bold text-emerald-400">
+                    {formatarValor(
+                      totalLimites - cartoesCredito.reduce((acc, c) => acc + calcularTotalComprometidoCartao(c), 0)
+                    )}
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -353,11 +440,12 @@ export default function FinanceiroApp() {
               <span className="text-xs font-bold text-slate-400 tracking-wider">FATURAS E LIMITES INDIVIDUAIS</span>
               <div className="space-y-4 mt-4">
                 {cartoesCredito.map((card) => {
-                  const fatura = calcularSaldoOuFatura(card);
-                  const limite = Number(card.limite_total) || 0;
-                  const disponivel = limite - fatura;
+                  const faturaAtual = calcularFaturaAtual(card);
+                  const comprometidoTotal = calcularTotalComprometidoCartao(card);
+                  const limiteTotalCard = Number(card.limite_total) || 0;
+                  const disponivelReal = limiteTotalCard - comprometidoTotal;
                   const melhorDia = card.dia_fechamento + 1;
-                  const porcUso = limite > 0 ? Math.min((fatura / limite) * 100, 100) : 0;
+                  const porcUso = limiteTotalCard > 0 ? Math.min((comprometidoTotal / limiteTotalCard) * 100, 100) : 0;
 
                   return (
                     <div key={card.id} className="p-4 bg-slate-50 rounded-xl border border-slate-200/80 space-y-3">
@@ -376,13 +464,13 @@ export default function FinanceiroApp() {
                         Melhor dia de compra: <strong className="text-purple-800">Dia {melhorDia}</strong> (Fecha dia {card.dia_fechamento})
                       </div>
 
-                      {limite > 0 && (
+                      {limiteTotalCard > 0 && (
                         <div>
                           <div className="flex justify-between text-[10px] text-slate-500 mb-1">
-                            <span>Uso do limite</span>
-                            <span>{porcUso.toFixed(0)}%</span>
+                            <span>Comprometido (Atual + Futuro)</span>
+                            <span>{porcUso.toFixed(0)}% do Limite</span>
                           </div>
-                          <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden">
+                          <div className="w-full bg-slate-200 h-2.5 rounded-full overflow-hidden">
                             <div 
                               className={`h-full ${porcUso > 80 ? 'bg-rose-500' : 'bg-purple-600'}`} 
                               style={{ width: `${porcUso}%` }}
@@ -391,18 +479,26 @@ export default function FinanceiroApp() {
                         </div>
                       )}
 
-                      <div className="flex justify-between items-end pt-1 border-t border-slate-200/60">
+                      <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-200/60">
                         <div>
-                          <span className="text-[10px] text-slate-400 font-semibold">VALOR GASTO (FATURA)</span>
-                          <div className="font-bold text-base text-rose-600">{formatarValor(fatura)}</div>
+                          <span className="text-[10px] text-slate-400 font-semibold uppercase">Fatura Atual</span>
+                          <div className="font-bold text-sm text-rose-600">{formatarValor(faturaAtual)}</div>
                         </div>
-                        {limite > 0 && (
-                          <div className="text-right">
-                            <span className="text-[10px] text-slate-400 font-semibold">DISPONÍVEL</span>
-                            <div className="font-bold text-sm text-emerald-600">{formatarValor(disponivel)}</div>
-                          </div>
-                        )}
+                        <div className="text-right">
+                          <span className="text-[10px] text-slate-400 font-semibold uppercase">Disp. Real</span>
+                          <div className="font-bold text-sm text-emerald-600">{formatarValor(disponivelReal)}</div>
+                        </div>
                       </div>
+
+                      {faturaAtual > 0 && (
+                        <button
+                          onClick={() => setCartaoParaPagar(card)}
+                          className="w-full py-2 bg-emerald-600 text-white font-bold text-xs rounded-lg shadow-sm hover:bg-emerald-700 transition flex items-center justify-center gap-1.5 mt-2"
+                        >
+                          <DollarSign size={14} />
+                          Pagar Fatura de {formatarValor(faturaAtual)}
+                        </button>
+                      )}
                     </div>
                   );
                 })}
@@ -411,17 +507,17 @@ export default function FinanceiroApp() {
           </div>
         )}
 
-        {/* ABA 3: RELATÓRIOS E DESPESAS POR CATEGORIA */}
+        {/* ABA 3: RELATÓRIOS */}
         {abaAtiva === 'relatorios' && (
           <div className="space-y-4">
             <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200/60">
               <span className="text-xs font-bold text-slate-400 tracking-wider">GASTOS POR CATEGORIA</span>
               
               <div className="space-y-4 mt-4">
-                {relatorioCat.length === 0 ? (
-                  <p className="text-xs text-slate-400 text-center py-4">Nenhum gasto efetivado registrado ainda.</p>
+                {relatorioCat.filter(c => c.categoria !== 'Transferência').length === 0 ? (
+                  <p className="text-xs text-slate-400 text-center py-4">Nenhum gasto registrado ainda.</p>
                 ) : (
-                  relatorioCat.map((item, idx) => {
+                  relatorioCat.filter(c => c.categoria !== 'Transferência').map((item, idx) => {
                     const totalGasto = Number(item.total);
                     const porcentagem = totalGastosEfetivadosRelatorio > 0 
                       ? ((totalGasto / totalGastosEfetivadosRelatorio) * 100).toFixed(1) 
@@ -436,11 +532,10 @@ export default function FinanceiroApp() {
                           </div>
                           <div className="text-right">
                             <span className="font-bold text-slate-800">{formatarValor(totalGasto)}</span>
-                            <span className="text-[10px] text-slate-400 ml-1 hover:underline">({porcentagem}%)</span>
+                            <span className="text-[10px] text-slate-400 ml-1">({porcentagem}%)</span>
                           </div>
                         </div>
 
-                        {/* Barra visual proporcional */}
                         <div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden">
                           <div 
                             className="bg-purple-600 h-full rounded-full transition-all duration-500" 
@@ -456,7 +551,127 @@ export default function FinanceiroApp() {
           </div>
         )}
 
-        {/* Modais de Form (Transação e Conta) continuam ativos */}
+        {/* MODAL: PAGAR FATURA */}
+        {cartaoParaPagar && (
+          <div className="bg-white p-5 rounded-2xl shadow-xl border-2 border-emerald-600 space-y-4">
+            <div className="flex justify-between items-center border-b pb-2">
+              <h2 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                <DollarSign size={16} className="text-emerald-600" /> Pagar Fatura - {cartaoParaPagar.nome}
+              </h2>
+              <button onClick={() => setCartaoParaPagar(null)} className="text-xs text-slate-400 font-bold">
+                Fechar
+              </button>
+            </div>
+
+            <form onSubmit={handlePagarFatura} className="space-y-3">
+              <div>
+                <span className="text-xs text-slate-500">Valor da Fatura a Pagar</span>
+                <div className="text-xl font-bold text-rose-600 mt-0.5">
+                  {formatarValor(calcularFaturaAtual(cartaoParaPagar))}
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[10px] font-bold text-slate-500 uppercase">Debitar de qual conta?</label>
+                <select
+                  value={contaPagamentoFatura}
+                  onChange={e => setContaPagamentoFatura(e.target.value)}
+                  className="w-full p-2.5 bg-slate-50 border rounded-xl text-xs outline-none font-bold"
+                >
+                  {contasBancarias.map(c => (
+                    <option key={c.id} value={c.nome}>{c.nome}</option>
+                  ))}
+                </select>
+              </div>
+
+              <input
+                type="date"
+                value={data}
+                onChange={e => setData(e.target.value)}
+                className="w-full p-2.5 bg-slate-50 border rounded-xl text-xs outline-none"
+              />
+
+              <button
+                type="submit"
+                className="w-full py-3 bg-emerald-600 text-white font-bold text-xs rounded-xl shadow-md hover:bg-emerald-700 transition"
+              >
+                Confirmar Pagamento da Fatura
+              </button>
+            </form>
+          </div>
+        )}
+
+        {/* MODAL: TRANSFERÊNCIA */}
+        {mostrarFormTransferencia && (
+          <div className="bg-white p-5 rounded-2xl shadow-xl border-2 border-purple-600 space-y-4">
+            <div className="flex justify-between items-center border-b pb-2">
+              <h2 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                <ArrowRightLeft size={16} className="text-purple-700" /> Transferência entre Contas
+              </h2>
+              <button onClick={() => setMostrarFormTransferencia(false)} className="text-xs text-slate-400 font-bold">
+                Fechar
+              </button>
+            </div>
+
+            <form onSubmit={handleTransferencia} className="space-y-3">
+              <div>
+                <label className="text-[11px] font-bold text-slate-400">VALOR (R$)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  placeholder="R$ 0,00"
+                  value={valorTransferencia}
+                  onChange={e => setValorTransferencia(e.target.value)}
+                  className="w-full text-xl font-bold p-2 border-b-2 border-purple-500 outline-none text-purple-900"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] font-bold text-slate-500">DE (SAI DE):</label>
+                  <select
+                    value={contaOrigem}
+                    onChange={e => setContaOrigem(e.target.value)}
+                    className="w-full p-2.5 bg-slate-50 border rounded-xl text-xs outline-none"
+                  >
+                    {contasBancarias.map(c => (
+                      <option key={c.id} value={c.nome}>{c.nome}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-bold text-slate-500">PARA (VAI PARA):</label>
+                  <select
+                    value={contaDestino}
+                    onChange={e => setContaDestino(e.target.value)}
+                    className="w-full p-2.5 bg-slate-50 border rounded-xl text-xs outline-none"
+                  >
+                    {contasBancarias.map(c => (
+                      <option key={c.id} value={c.nome}>{c.nome}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <input
+                type="date"
+                value={data}
+                onChange={e => setData(e.target.value)}
+                className="w-full p-2.5 bg-slate-50 border rounded-xl text-xs outline-none"
+              />
+
+              <button
+                type="submit"
+                className="w-full py-3 bg-purple-700 text-white font-bold text-xs rounded-xl shadow-md hover:bg-purple-800 transition"
+              >
+                Confirmar Transferência
+              </button>
+            </form>
+          </div>
+        )}
+
+        {/* Modal Transação Comum */}
         {mostrarFormTransacao && (
           <div className="bg-white p-5 rounded-2xl shadow-xl border-2 border-purple-600 space-y-4">
             <div className="flex justify-between items-center border-b pb-2">
@@ -580,6 +795,7 @@ export default function FinanceiroApp() {
           </div>
         )}
 
+        {/* Modal Cadastrar Conta */}
         {mostrarFormConta && (
           <div className="bg-white p-4 rounded-2xl shadow-md border-2 border-purple-600 space-y-3">
             <h2 className="text-sm font-bold text-slate-800">🏛️ Cadastrar Conta / Cartão</h2>

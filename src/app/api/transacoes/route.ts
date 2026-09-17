@@ -53,7 +53,7 @@ export async function POST(request: Request) {
     const body = await request.json();
     await initDb();
 
-    // Alternar status Pago / Não Pago
+    // Toggle de status Pago
     if (body.acao === 'toggle_pago') {
       const { id, pago } = body;
       const result = await sql`
@@ -62,7 +62,30 @@ export async function POST(request: Request) {
       return NextResponse.json(result.rows[0]);
     }
 
-    // Criar Conta ou Cartão
+    // AÇÃO DE PAGAR FATURA DO CARTÃO
+    if (body.acao === 'pagar_fatura') {
+      const { nomeCartao, contaPagamento, valorTotal, dataPagamento } = body;
+
+      // 1. Marca as despesas daquele cartão no mês como pagas
+      const mesAtual = new Date(dataPagamento).toISOString().slice(0, 7);
+      await sql`
+        UPDATE transacoes 
+        SET pago = TRUE 
+        WHERE LOWER(banco) = LOWER(${nomeCartao}) 
+          AND tipo = 'saida' 
+          AND TO_CHAR(data, 'YYYY-MM') = ${mesAtual};
+      `;
+
+      // 2. Gera o registro de saída do saldo da conta corrente (Itaú/PagBank)
+      await sql`
+        INSERT INTO transacoes (tipo, valor, descricao, categoria, banco, data, pago)
+        VALUES ('saida', ${parseFloat(valorTotal)}, ${`Pagamento Fatura ${nomeCartao}`}, 'Cartões', ${contaPagamento}, ${dataPagamento}, TRUE);
+      `;
+
+      return NextResponse.json({ success: true });
+    }
+
+    // Criar Nova Conta / Cartão
     if (body.acao === 'criar_conta') {
       const { nome, tipo, saldo_inicial, limite_total, dia_fechamento, dia_vencimento } = body;
       const result = await sql`
@@ -73,7 +96,25 @@ export async function POST(request: Request) {
       return NextResponse.json(result.rows[0]);
     }
 
-    // Criar Parcelamento (Exato do Mobills)
+    // Transferência entre contas
+    if (body.acao === 'transferencia') {
+      const { contaOrigem, contaDestino, valor, data } = body;
+      const valorNum = parseFloat(valor);
+
+      await sql`
+        INSERT INTO transacoes (tipo, valor, descricao, categoria, banco, data, pago)
+        VALUES ('saida', ${valorNum}, ${`Transferência para ${contaDestino}`}, 'Transferência', ${contaOrigem}, ${data}, TRUE);
+      `;
+
+      await sql`
+        INSERT INTO transacoes (tipo, valor, descricao, categoria, banco, data, pago)
+        VALUES ('entrada', ${valorNum}, ${`Transferência de ${contaOrigem}`}, 'Transferência', ${contaDestino}, ${data}, TRUE);
+      `;
+
+      return NextResponse.json({ success: true });
+    }
+
+    // Criar Compra Parcelada
     if (body.acao === 'criar_parcelado') {
       const { valor_total, total_parcelas, descricao, categoria, banco, data_primeira, pago } = body;
       const valorParcela = (parseFloat(valor_total) / parseInt(total_parcelas)).toFixed(2);
@@ -97,7 +138,7 @@ export async function POST(request: Request) {
       return NextResponse.json(parcelasCriadas);
     }
 
-    // Transação Comum ou Despesa Fixa
+    // Lançamento Padrão
     const { tipo, valor, descricao, categoria, banco, data, pago, is_fixo } = body;
     const result = await sql`
       INSERT INTO transacoes (tipo, valor, descricao, categoria, banco, data, pago, is_fixo)
